@@ -1,0 +1,260 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ota-polyglot-platform/apps/frontend-b2c/**"
+      - "ota-polyglot-platform/apps/core-engine-dotnet/**"
+      - "ota-polyglot-platform/shared/protos/**"
+      - "ota-polyglot-platform/docker-compose.prod.yml"
+      - "ota-polyglot-platform/deploy/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/scripts/changed-paths.sh"
+  workflow_dispatch:
+    inputs:
+      build_core:
+        description: Build and deploy core-engine
+        type: boolean
+        default: true
+      build_b2c:
+        description: Build and deploy frontend-b2c
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      b2c: ${{ steps.filter.outputs.b2c }}
+      core: ${{ steps.filter.outputs.core }}
+      proto: ${{ steps.filter.outputs.proto }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "b2c=${{ inputs.build_b2c }}" >> "$GITHUB_OUTPUT"
+            echo "core=${{ inputs.build_core }}" >> "$GITHUB_OUTPUT"
+            echo "proto=false" >> "$GITHUB_OUTPUT"
+          else
+            .github/scripts/changed-paths.sh >> "$GITHUB_OUTPUT"
+          fi
+
+  frontend-b2c:
+    needs: changes
+    if: needs.changes.outputs.b2c == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ota-polyglot-platform/apps/frontend-b2c
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ota-polyglot-platform/apps/frontend-b2c/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  core-engine:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ota
+          POSTGRES_USER: ota
+          POSTGRES_PASSWORD: change-me-in-prod
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ota -d ota"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Test
+        working-directory: ota-polyglot-platform
+        env:
+          OTA_TEST_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=ota;Username=ota;Password=change-me-in-prod
+          ConnectionStrings__Postgres: Host=localhost;Port=5432;Database=ota;Username=ota;Password=change-me-in-prod
+          OTA_TEST_REDIS_CONNECTION: localhost:6379,abortConnect=false
+        run: dotnet test apps/core-engine-dotnet/tests/Ota.CoreEngine.Tests/Ota.CoreEngine.Tests.csproj
+
+  proto:
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile ota.proto
+        working-directory: ota-polyglot-platform
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --proto_path=shared/protos --descriptor_set_out=/dev/null shared/protos/ota.proto
+
+  build:
+    needs: [changes, frontend-b2c, core-engine, proto]
+    if: >
+      always() &&
+      needs.changes.result == 'success' &&
+      (needs.frontend-b2c.result == 'success' || needs.frontend-b2c.result == 'skipped') &&
+      (needs.core-engine.result == 'success' || needs.core-engine.result == 'skipped') &&
+      (needs.proto.result == 'success' || needs.proto.result == 'skipped') &&
+      (needs.changes.outputs.b2c == 'true' || needs.changes.outputs.core == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      owner: ${{ steps.meta.outputs.owner }}
+      built_b2c: ${{ steps.missing.outputs.b2c }}
+      built_core: ${{ steps.missing.outputs.core }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The default docker driver cannot export a GitHub Actions cache.
+      - uses: docker/setup-buildx-action@v3
+      # A core-only change still needs a storefront image the first time, and the other way around.
+      - id: missing
+        run: |
+          set -euo pipefail
+          owner="${{ steps.meta.outputs.owner }}"
+          need_b2c="${{ needs.changes.outputs.b2c }}"
+          need_core="${{ needs.changes.outputs.core }}"
+          if [ "$need_b2c" != "true" ] && ! docker buildx imagetools inspect "ghcr.io/${owner}/aerotake-frontend-b2c:latest"; then
+            echo "frontend-b2c has not been published yet; building it."
+            need_b2c=true
+          fi
+          if [ "$need_core" != "true" ] && ! docker buildx imagetools inspect "ghcr.io/${owner}/aerotake-core-engine:latest"; then
+            echo "core-engine has not been published yet; building it."
+            need_core=true
+          fi
+          echo "b2c=${need_b2c}" >> "$GITHUB_OUTPUT"
+          echo "core=${need_core}" >> "$GITHUB_OUTPUT"
+      - name: Build core-engine
+        if: steps.missing.outputs.core == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ota-polyglot-platform
+          file: ota-polyglot-platform/apps/core-engine-dotnet/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/aerotake-core-engine:${{ github.sha }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/aerotake-core-engine:latest
+          cache-from: type=gha,scope=core-engine
+          cache-to: type=gha,scope=core-engine,mode=max
+      - name: Build frontend-b2c
+        if: steps.missing.outputs.b2c == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ota-polyglot-platform
+          file: ota-polyglot-platform/apps/frontend-b2c/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/aerotake-frontend-b2c:${{ github.sha }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/aerotake-frontend-b2c:latest
+          cache-from: type=gha,scope=frontend-b2c
+          cache-to: type=gha,scope=frontend-b2c,mode=max
+      - name: Keep the last five core-engine images
+        if: steps.missing.outputs.core == 'true'
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: aerotake-core-engine
+          package-type: container
+          min-versions-to-keep: 5
+      - name: Keep the last five frontend-b2c images
+        if: steps.missing.outputs.b2c == 'true'
+        continue-on-error: true
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: aerotake-frontend-b2c
+          package-type: container
+          min-versions-to-keep: 5
+
+  deploy:
+    needs: [changes, frontend-b2c, core-engine, proto, build]
+    if: >
+      always() &&
+      needs.changes.result == 'success' &&
+      (needs.frontend-b2c.result == 'success' || needs.frontend-b2c.result == 'skipped') &&
+      (needs.core-engine.result == 'success' || needs.core-engine.result == 'skipped') &&
+      (needs.proto.result == 'success' || needs.proto.result == 'skipped') &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy the stack and restart
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          OWNER: ${{ needs.build.outputs.owner || github.repository_owner }}
+          BUILT_CORE: ${{ needs.build.outputs.built_core }}
+          BUILT_B2C: ${{ needs.build.outputs.built_b2c }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOST}" ] || [ -z "${USER}" ] || [ -z "${SSH_KEY}" ]; then
+            echo "DEPLOY_HOST, DEPLOY_USER, or DEPLOY_SSH_KEY is unset, so the server was not updated. Add the three secrets, then run this workflow manually."
+            exit 0
+          fi
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh_opts=(-i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=accept-new -p 2222)
+          scp_opts=(-i "$HOME/.ssh/deploy_key" -o StrictHostKeyChecking=accept-new -P 2222)
+          ssh "${ssh_opts[@]}" "$USER@$HOST" "mkdir -p /opt/aerotake/deploy /opt/aerotake/scripts /opt/aerotake/certs"
+          scp "${scp_opts[@]}" \
+            ota-polyglot-platform/docker-compose.prod.yml \
+            "$USER@$HOST:/opt/aerotake/docker-compose.prod.yml"
+          scp "${scp_opts[@]}" \
+            ota-polyglot-platform/deploy/Caddyfile \
+            ota-polyglot-platform/deploy/deploy.sh \
+            ota-polyglot-platform/deploy/backup.sh \
+            "$USER@$HOST:/opt/aerotake/deploy/"
+          scp "${scp_opts[@]}" \
+            ota-polyglot-platform/scripts/provision-tenant.sh \
+            "$USER@$HOST:/opt/aerotake/scripts/provision-tenant.sh"
+          args=(--owner "$owner")
+          if [ "$BUILT_CORE" = "true" ]; then args+=(--core "$SHA"); fi
+          if [ "$BUILT_B2C" = "true" ]; then args+=(--b2c "$SHA"); fi
+          ssh "${ssh_opts[@]}" "$USER@$HOST" "chmod 755 /opt/aerotake/deploy/deploy.sh /opt/aerotake/deploy/backup.sh /opt/aerotake/scripts/provision-tenant.sh && /opt/aerotake/deploy/deploy.sh ${args[*]}"

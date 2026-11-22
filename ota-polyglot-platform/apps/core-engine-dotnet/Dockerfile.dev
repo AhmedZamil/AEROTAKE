@@ -1,0 +1,13 @@
+# Dev-mode image: hot reload via `dotnet watch`. Source is bind-mounted at
+# runtime by docker-compose.override.yml rather than COPYed in, so this
+# image only needs the SDK — no build/publish steps here.
+#
+# Intermediate/output paths: apps/core-engine-dotnet/Directory.Build.props
+# redirects obj/bin to /tmp when DOTNET_RUNNING_IN_CONTAINER=true (set by this
+# image), so host-side builds do not fight the watch process (T-3).
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+WORKDIR /workspace/apps/core-engine-dotnet/src
+EXPOSE 8080 8081
+# --non-interactive: rude edits (e.g. new interface members) restart instead of
+# blocking the container on a Yes/No prompt that nobody can answer.
+CMD ["dotnet", "watch", "run", "--non-interactive"]

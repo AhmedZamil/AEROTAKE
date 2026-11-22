@@ -1,0 +1,124 @@
+# Production stack for one Hostinger VPS. Do not merge this with docker-compose.yml:
+# that file publishes Postgres, Redis, and the core engine onto the host.
+#
+#   docker compose --env-file .env --env-file image-tags.env -f docker-compose.prod.yml up -d
+#
+# image-tags.env is written on the server by deploy/deploy.sh (GHCR_OWNER, CORE_IMAGE_TAG, B2C_IMAGE_TAG).
+
+name: aerotake
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ota}
+      POSTGRES_USER: ${POSTGRES_USER:-ota}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ota} -d ${POSTGRES_DB:-ota}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  core-engine:
+    image: ghcr.io/${GHCR_OWNER}/aerotake-core-engine:${CORE_IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ota};Username=${POSTGRES_USER:-ota};Password=${POSTGRES_PASSWORD}"
+      Redis__ConnectionString: "redis:6379,abortConnect=false"
+      JWT_SIGNING_KEYS: ${JWT_SIGNING_KEYS:?set JWT_SIGNING_KEYS in .env}
+      SERVICE_CLIENTS: ${SERVICE_CLIENTS:?set SERVICE_CLIENTS in .env}
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
+      FACEBOOK_APP_IDS: ${FACEBOOK_APP_IDS:-}
+      TURNSTILE_SECRET: ${TURNSTILE_SECRET:-}
+      STOREFRONT_PUBLIC_URL: ${STOREFRONT_PUBLIC_URL:-}
+      TENANT_REGISTRY_KEY: ${TENANT_REGISTRY_KEY:?set TENANT_REGISTRY_KEY in .env}
+      # Default in code is loopback plus private ranges, which covers the Docker bridge the storefront uses.
+      TRUSTED_PROXY_NETWORKS: ${TRUSTED_PROXY_NETWORKS:-}
+      SABRE_CLIENT_ID: ${SABRE_CLIENT_ID:-}
+      SABRE_PCC: ${SABRE_PCC:-}
+      SABRE_PASSWORD: ${SABRE_PASSWORD:-}
+      SABRE_API_BASE_URL: ${SABRE_API_BASE_URL:-https://api.cert.platform.sabre.com}
+      SABRE_JV_CLIENT_ID: ${SABRE_JV_CLIENT_ID:-}
+      SABRE_JV_CLIENT_SECRET: ${SABRE_JV_CLIENT_SECRET:-}
+      HAJEE_API_BASE_URL: ${HAJEE_API_BASE_URL:-}
+      HAJEE_API_ACCESS_KEY: ${HAJEE_API_ACCESS_KEY:-}
+      HAJEE_CLIENT_ID: ${HAJEE_CLIENT_ID:-}
+      SSLCOMMERZ_STORE_ID: ${SSLCOMMERZ_STORE_ID:-}
+      SSLCOMMERZ_STORE_PASSWORD: ${SSLCOMMERZ_STORE_PASSWORD:-}
+      SSLCOMMERZ_IS_SANDBOX: ${SSLCOMMERZ_IS_SANDBOX:-true}
+      # Public origin SSLCommerz posts IPN to. Caddy forwards only that path to this container.
+      SSLCOMMERZ_CORE_PUBLIC_URL: ${SSLCOMMERZ_CORE_PUBLIC_URL:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+
+  frontend-b2c:
+    image: ghcr.io/${GHCR_OWNER}/aerotake-frontend-b2c:${B2C_IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      - core-engine
+    environment:
+      CORE_ENGINE_REST_URL: http://core-engine:8080
+      CORE_ENGINE_GRPC_URL: core-engine:8081
+      STOREFRONT_PUBLIC_URL: ${STOREFRONT_PUBLIC_URL:?set STOREFRONT_PUBLIC_URL in .env}
+      TENANT_REGISTRY_KEY: ${TENANT_REGISTRY_KEY}
+      TRUST_FORWARDED_FOR: "true"
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      SERVICE_CLIENT_ID: frontend-b2c
+      SERVICE_CLIENT_SECRET: ${FRONTEND_B2C_SERVICE_SECRET:?set FRONTEND_B2C_SERVICE_SECRET in .env}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend-b2c
+      - core-engine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,23 @@
+# Cloudflare Origin Certificate (files on the server, not in git).
+# The firewall allows 443 only from Cloudflare, so a public Let's Encrypt challenge cannot run.
+# Caddy replaces X-Forwarded-For with CF-Connecting-IP. The storefront reads the first address
+# in that header, so a visitor-supplied value must not be kept.
+
+http://{$SITE_ADDRESS} {
+	redir https://{host}{uri} permanent
+}
+
+{$SITE_ADDRESS} {
+	tls /certs/origin.pem /certs/origin.key
+
+	handle /api/v1/payments/sslcommerz/* {
+		reverse_proxy core-engine:8080
+	}
+
+	handle {
+		reverse_proxy frontend-b2c:3001 {
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		}
+	}
+}

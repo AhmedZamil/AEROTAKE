@@ -1,0 +1,31 @@
+# Env & secrets
+.env
+*.local
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# .NET
+bin/
+obj/
+*.user
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Docker / misc
+pgdata/
+*.log
+.DS_Store
+docker-compose.override.yml
+certs/
+image-tags.env
+image-tags.env.prev
+
+stub.env
+

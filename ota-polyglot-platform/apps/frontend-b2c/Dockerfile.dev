@@ -1,0 +1,11 @@
+# Dev-mode image: `next dev` with hot reload. Source is bind-mounted at
+# runtime by docker-compose.override.yml (repo root so shared/protos stays
+# reachable); node_modules lives in a named volume so host/container
+# binaries never clash.
+FROM node:22-alpine
+WORKDIR /workspace/apps/frontend-b2c
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3001 \
+    HOSTNAME=::
+EXPOSE 3001
+CMD ["sh", "-c", "npm install --no-audit --no-fund && npm run dev"]

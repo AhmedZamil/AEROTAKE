@@ -1,0 +1,12 @@
+# Repo-root .dockerignore — core-engine and frontend both build from this
+# root (see their docker-compose.yml build.context) so /shared/protos is
+# reachable via a plain COPY. Neither Dockerfile does `COPY . .`; both
+# whitelist specific paths, so these excludes only shrink the build context
+# sent to the daemon and keep stray host build artifacts (a different-
+# platform native binary, a stale bin/obj) from ever being copied in.
+**/node_modules
+**/.next
+**/bin
+**/obj
+**/.git
+**/dist

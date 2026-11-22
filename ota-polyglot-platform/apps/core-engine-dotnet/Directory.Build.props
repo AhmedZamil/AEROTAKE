@@ -1,0 +1,22 @@
+<Project>
+  <!--
+    T-3: host `dotnet test` / `dotnet ef` and the compose core-engine container
+    (`dotnet watch` on a bind-mounted repo) must not share obj/bin.
+
+    Official .NET images set DOTNET_RUNNING_IN_CONTAINER=true. In that case we
+    park intermediates under /tmp (inside the container filesystem), so the bind
+    mount's apps/core-engine-dotnet/**/obj stays for the host only. Without this,
+    whichever side restores last rewrites project.assets.json with its own NuGet
+    paths and the other hits NETSDK1064.
+
+    DefaultItemExcludes must still cover the conventional obj/bin folders: once
+    BaseIntermediateOutputPath moves to /tmp, the SDK no longer excludes the
+    bind-mounted obj/, and leftover host-generated *.cs (protobuf, AssemblyInfo)
+    would be compiled twice.
+  -->
+  <PropertyGroup Condition="'$(DOTNET_RUNNING_IN_CONTAINER)' == 'true'">
+    <BaseIntermediateOutputPath>/tmp/ota-dotnet/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>/tmp/ota-dotnet/bin/$(MSBuildProjectName)/</BaseOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/bin/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

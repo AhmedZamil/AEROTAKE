@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f3f6f9;
+  --foreground: #1e293b;
+  --brand: #fc553b;
+  --brand-dark: #e0442c;
+  --brand-soft: #fff1ee;
+  --sidebar: #0b1220;
+  --card: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-soft: var(--brand-soft);
+  --color-sidebar: var(--sidebar);
+  --color-card: var(--card);
+  --font-sans: var(--font-poppins);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-poppins), system-ui, sans-serif;
+}
+
+/* Ticket notch style for processing card */
+.ticket-notch {
+  position: relative;
+}
+
+.ticket-notch::before,
+.ticket-notch::after {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  background: var(--background);
+  border-radius: 9999px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+.ticket-notch::before {
+  left: -10px;
+}
+
+.ticket-notch::after {
+  right: -10px;
+}
+
+.ticket-divider {
+  border-top: 2px dotted rgba(255, 255, 255, 0.7);
+}
+
+/* Premium sidebar scrollbar */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(252, 85, 59, 0.45) transparent;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 12px,
+    #000 calc(100% - 12px),
+    transparent 100%
+  );
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  margin: 10px 0;
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    rgba(252, 85, 59, 0.25) 0%,
+    rgba(252, 85, 59, 0.65) 50%,
+    rgba(252, 85, 59, 0.25) 100%
+  );
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(252, 85, 59, 0.45) 0%,
+    #fc553b 50%,
+    rgba(252, 85, 59, 0.45) 100%
+  );
+}
+
+.sidebar-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Mobile-friendly horizontal table scroll */
+.table-scroll {
+  -webkit-overflow-scrolling: touch;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.table-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+
+.table-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.55);
+}
+
+/* Touch-friendly tap targets */
+@media (max-width: 640px) {
+  .ticket-notch::before,
+  .ticket-notch::after {
+    width: 16px;
+    height: 16px;
+  }
+
+  .ticket-notch::before {
+    left: -8px;
+  }
+
+  .ticket-notch::after {
+    right: -8px;
+  }
+}
+
+

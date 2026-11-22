@@ -1,0 +1,196 @@
+name: ota-polyglot-platform
+
+# Shared by all three app services: Slack + email alerts for unhandled
+# exceptions. Unset in .env -> each service logs a warning and no-ops.
+x-alerting-env: &alerting-env
+  SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+  # Local compose defaults to Mailpit (catcher). Override with a real host/port/TLS for staging/prod.
+  SMTP_HOST: "${SMTP_HOST:-mailpit}"
+  SMTP_PORT: "${SMTP_PORT:-1025}"
+  SMTP_USER: "${SMTP_USER:-}"
+  SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+  SMTP_FROM: "${SMTP_FROM:-noreply@aerotake.local}"
+  SMTP_TO: "${SMTP_TO:-oncall@ota-platform.local}"
+  # Real providers (SendGrid/SES/Mailgun/Gmail) need STARTTLS on 587 — only
+  # set to "false" for a bare non-TLS relay (Mailpit locally).
+  SMTP_USE_TLS: "${SMTP_USE_TLS:-false}"
+
+services:
+  # ------------------------------ Infrastructure ------------------------------
+  # Local mail catcher for transactional + alert email (P5-18). UI: http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ota}
+      POSTGRES_USER: ${POSTGRES_USER:-ota}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ota}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ota} -d ${POSTGRES_DB:-ota}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ------------------------------ Microservices -------------------------------
+  core-engine:
+    build:
+      context: .
+      dockerfile: apps/core-engine-dotnet/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    ports:
+      - "8080:8080"   # REST + Swagger + health
+      # gRPC (h2c). Loopback only: every call is authenticated, but there is no reason for the
+      # network to reach it — only the frontends (over the compose network) and you locally.
+      - "127.0.0.1:8081:8081"
+    environment:
+      <<: *alerting-env
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ota};Username=${POSTGRES_USER:-ota};Password=${POSTGRES_PASSWORD:-ota}"
+      Redis__ConnectionString: "redis:6379,abortConnect=false"
+      # ES256 signing keys — core-engine is the ONLY service that holds them. Generate with
+      # scripts/generate-jwt-keys.sh. Unset in Development => ephemeral keys (sessions die on restart);
+      # unset anywhere else => core refuses to start. Frontends verify via core's /.well-known/jwks.json.
+      JWT_SIGNING_KEYS: "${JWT_SIGNING_KEYS:-}"
+      # Frontends allowed to get service tokens (anonymous search/revalidate only) and what each may do.
+      # Unset => no frontend can search for logged-out visitors. See scripts/generate-service-clients.sh.
+      SERVICE_CLIENTS: "${SERVICE_CLIENTS:-}"
+      # OAuth client id(s) of the Google app registered for customer sign-in (comma separated). Empty => Google sign-in
+      # answers 503 "provider_not_configured". Register the app under a COMPANY Google account, not a personal one.
+      GOOGLE_CLIENT_IDS: "${GOOGLE_CLIENT_IDS:-}"
+      TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"   # Cloudflare Turnstile secret; empty = the check is off (local development)
+      STOREFRONT_PUBLIC_URL: "${STOREFRONT_PUBLIC_URL:-}"   # where emailed links (confirm email, reset password, manage booking) and SSLCommerz browser return URLs point; empty = https://{tenant host}
+      FACEBOOK_APP_IDS: "${FACEBOOK_APP_IDS:-}"
+      # Networks whose X-Forwarded-For is believed (the storefront servers that call core). Default: loopback + private ranges.
+      # Anything else that sends the header is ignored, so the per-IP rate limits cannot be dodged by inventing it.
+      TRUSTED_PROXY_NETWORKS: "${TRUSTED_PROXY_NETWORKS:-}"
+      # Real Sabre cert credentials, same env var names as AeroTake's own .env —
+      # copy the actual values across yourself. Blank => falls back to SupplierStub.
+      SABRE_CLIENT_ID: "${SABRE_CLIENT_ID:-}"
+      SABRE_PCC: "${SABRE_PCC:-}"
+      SABRE_PASSWORD: "${SABRE_PASSWORD:-}"
+      SABRE_API_BASE_URL: "${SABRE_API_BASE_URL:-https://api.cert.platform.sabre.com}"
+      SABRE_JV_CLIENT_ID: "${SABRE_JV_CLIENT_ID:-}"
+      SABRE_JV_CLIENT_SECRET: "${SABRE_JV_CLIENT_SECRET:-}"
+      # Interim guard on the tenant registry endpoint (until service tokens, P0-12).
+      # Empty = open, fine for local dev; set the SAME value on core-engine and frontend elsewhere.
+      TENANT_REGISTRY_KEY: "${TENANT_REGISTRY_KEY:-}"
+      # Hajee Air partner API (second supplier, searched alongside Sabre).
+      # Blank => Hajee is simply disabled. The base URL MUST be https://.
+      HAJEE_API_BASE_URL: "${HAJEE_API_BASE_URL:-}"
+      HAJEE_API_ACCESS_KEY: "${HAJEE_API_ACCESS_KEY:-}"
+      HAJEE_CLIENT_ID: "${HAJEE_CLIENT_ID:-}"
+      # SSLCommerz hosted checkout (P4-3). Store password lives only in .env — never commit it.
+      # Blank password => pay-start answers 409 payment_unavailable until you set it.
+      SSLCOMMERZ_STORE_ID: "${SSLCOMMERZ_STORE_ID:-aerot6aba61e2c87f7}"
+      SSLCOMMERZ_STORE_PASSWORD: "${SSLCOMMERZ_STORE_PASSWORD:-}"
+      SSLCOMMERZ_IS_SANDBOX: "${SSLCOMMERZ_IS_SANDBOX:-true}"
+      # Public origin SSLCommerz can POST IPN to. Localhost needs a tunnel (ngrok/cloudflared).
+      SSLCOMMERZ_CORE_PUBLIC_URL: "${SSLCOMMERZ_CORE_PUBLIC_URL:-}"
+
+  ai-engine:
+    build:
+      context: apps/ai-engine-python
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *alerting-env
+      AI_DATABASE_URL: "postgresql://${POSTGRES_USER:-ota}:${POSTGRES_PASSWORD:-ota}@postgres:5432/${POSTGRES_DB:-ota}"
+      AI_BOOKING_CREATED_TOPIC: "booking-created"
+      AI_REDIS_URL: "redis://redis:6379/1"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend-nextjs/Dockerfile
+    depends_on:
+      - core-engine
+      - ai-engine
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *alerting-env
+      CORE_ENGINE_REST_URL: "http://core-engine:8080"
+      CORE_ENGINE_GRPC_URL: "core-engine:8081"
+      AI_ENGINE_URL: "http://ai-engine:8000"
+      TENANT_REGISTRY_KEY: "${TENANT_REGISTRY_KEY:-}"
+      # This app's credential for calling gRPC on behalf of logged-out visitors (search/revalidate only).
+      SERVICE_CLIENT_ID: "frontend-b2b"
+      SERVICE_CLIENT_SECRET: "${FRONTEND_B2B_SERVICE_SECRET:-}"
+      # Lets `X-Api-Key: demo-b2b-key` act as the demo Gold agency without logging in
+      # (README examples). That key is public in this repo: set to "false" everywhere real.
+      ENABLE_DEMO_API_KEYS: "${ENABLE_DEMO_API_KEYS:-true}"
+      # Dev/QA Price Check page (/dashboard/price-check). Default on for this compose
+      # stack; omit or set to anything other than "1" in production so the nav link is gone.
+      PRICE_CHECK_ENABLED: "${PRICE_CHECK_ENABLED:-1}"
+      # Deliberately NO signing secret here. The gRPC-bridge routes that move money verify tokens
+      # against the public keys core publishes (lib/jwks.ts), so this app can check a token but
+      # never mint one. (core-engine's gRPC service has no auth of its own yet — P0-11.)
+
+  # Consumer storefront. Like frontend above it holds no signing secret; it will verify
+  # customer tokens against core's JWKS. Core URLs are unused until search is wired to core (P5-3).
+  frontend-b2c:
+    build:
+      context: .
+      dockerfile: apps/frontend-b2c/Dockerfile
+    depends_on:
+      - core-engine
+    ports:
+      - "3001:3001"
+    environment:
+      <<: *alerting-env
+      CORE_ENGINE_REST_URL: "http://core-engine:8080"
+      CORE_ENGINE_GRPC_URL: "core-engine:8081"
+      STOREFRONT_PUBLIC_URL: "${STOREFRONT_PUBLIC_URL:-http://localhost:3001}"   # 303 after SSLCommerz must land on localhost (not [::]) so auth cookies stick
+      STOREFRONT_HOST_OVERRIDE: "${STOREFRONT_HOST_OVERRIDE:-}"   # DEV ONLY: look the tenant up as this host (b2c.localhost) while browsing on localhost:3001
+      TRUST_FORWARDED_FOR: "${TRUST_FORWARDED_FOR:-false}"   # true only behind a proxy that overwrites X-Forwarded-For (else visitors could forge it to dodge rate limits)
+      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"   # Cloudflare Turnstile (the quiet CAPTCHA); empty = no check on the page
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"   # the same OAuth client id core verifies against (GOOGLE_CLIENT_IDS); empty = sign-in hidden
+      SERVICE_CLIENT_ID: "frontend-b2c"
+      SERVICE_CLIENT_SECRET: "${FRONTEND_B2C_SERVICE_SECRET:-}"
+
+  # Company admin for both B2B and B2C. PlatformAdmin JWT only. Holds no signing secret.
+  frontend-admin:
+    build:
+      context: .
+      dockerfile: apps/frontend-admin/Dockerfile
+    depends_on:
+      - core-engine
+    ports:
+      - "3002:3002"
+    environment:
+      <<: *alerting-env
+      CORE_ENGINE_REST_URL: "http://core-engine:8080"
+      # Matches the development seed so the first login skips email verification.
+      ADMIN_DEVICE_TOKEN: "${ADMIN_DEVICE_TOKEN:-dev-admin-device}"
+
+volumes:
+  pgdata:

@@ -1,0 +1,10 @@
+# Dev-mode image: `next dev` with hot reload. Source is bind-mounted at
+# runtime by docker-compose.override.yml (the whole repo root, so
+# shared/protos/ota.proto is reachable — same reason core-engine's dev
+# mount isn't scoped to just its own app directory either); node_modules
+# lives in a named volume (see override) so host/container binary
+# mismatches never bite.
+FROM node:22-alpine
+WORKDIR /workspace/apps/frontend-nextjs
+EXPOSE 3000
+CMD ["sh", "-c", "npm install --no-audit --no-fund && npm run dev"]

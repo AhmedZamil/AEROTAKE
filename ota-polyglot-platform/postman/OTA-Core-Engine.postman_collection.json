@@ -1,0 +1,1654 @@
+{
+  "info": {
+    "_postman_id": "ota-core-engine-collection",
+    "name": "OTA Core Engine",
+    "description": "Auth (JWT) + real-Sabre-backed search/booking pipeline for core-engine-dotnet. Import the companion environment (OTA Core Engine (local)) alongside this collection. Run the \"Auth\" folder top to bottom first — each request's test script auto-captures variables (userId, accessToken, deviceToken, ...) into the environment for the next one. The gRPC folder's requests target shared/protos/ota.proto directly; if Postman doesn't auto-resolve the proto path on import, re-select it via the gRPC request's \"protobuf definition\" panel (Import a .proto file -> point at shared/protos/ota.proto) — one-time fix per machine.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agencyName\": \"Postman Test Agency\",\n  \"email\": \"postman-test-{{$timestamp}}@example.com\",\n  \"password\": \"Passw0rd!\",\n  \"firstName\": \"Postman\",\n  \"lastName\": \"Tester\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates a brand-new agency + AgencyAdmin user (self-service signup, mirrors AeroTake's RegisteredUserController). For the rest of this collection we use the pre-seeded demo@skybridge.example user instead (see Login) so the flow doesn't depend on this succeeding, but it's here to prove registration works standalone."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "if (body.userId) pm.environment.set('userId', body.userId);",
+                  "if (body.agentId) pm.environment.set('agentId', body.agentId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login as PlatformAdmin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\",\n  \"deviceToken\": \"{{adminDeviceToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Dev-seeded PlatformAdmin (admin@skybridge.example / Passw0rd!, tenant demo-tenant). Uses the pre-registered deviceToken so no email verify step. Saves {{adminAccessToken}} for markup-rules / exchange-rates / agencies. For B2C tenant markup use email admin@aerotake-b2c.example with X-Tenant-ID=aerotake-b2c (same password + deviceToken)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('issued an access token (not device verification)', () => pm.expect(body.accessToken).to.be.ok);",
+                  "if (body.accessToken) {",
+                  "  pm.environment.set('adminAccessToken', body.accessToken);",
+                  "  pm.environment.set('adminRefreshToken', body.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (no device token yet)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{demoEmail}}\",\n  \"password\": \"{{demoPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "First login from an unrecognized device returns deviceVerificationRequired=true and emails a code (ported from AeroTake's device-verification flow, minus the hardcoded '123456' bypass). If SMTP isn't configured locally, read the code straight from the DB:\n\ndocker compose exec postgres psql -U ota -d ota -t -c \"SELECT \\\"Code\\\" FROM \\\"VerificationCodes\\\" WHERE \\\"UserId\\\"='{{userId}}' ORDER BY \\\"CreatedAt\\\" DESC LIMIT 1;\""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.userId) pm.environment.set('userId', body.userId);",
+                  "if (body.accessToken) { pm.environment.set('accessToken', body.accessToken); pm.environment.set('refreshToken', body.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Verify Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"code\": \"REPLACE_WITH_CODE_FROM_EMAIL_OR_DB\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/verify-device",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-device"
+              ]
+            },
+            "description": "Paste the real code (from the email, or the DB query in the Login request's description) over REPLACE_WITH_CODE_FROM_EMAIL_OR_DB before sending. Success issues tokens AND a deviceToken — save that deviceToken; subsequent logins that send it back skip verification entirely."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.environment.set('accessToken', body.accessToken);",
+                  "pm.environment.set('refreshToken', body.refreshToken);",
+                  "if (body.deviceToken) pm.environment.set('deviceToken', body.deviceToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login (with known device token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{demoEmail}}\",\n  \"password\": \"{{demoPassword}}\",\n  \"deviceToken\": \"{{deviceToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Run this AFTER Verify Device has populated {{deviceToken}}. Should skip verification and return tokens directly."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK, tokens issued directly', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().accessToken).to.exist; });",
+                  "const body = pm.response.json();",
+                  "if (body.accessToken) { pm.environment.set('accessToken', body.accessToken); pm.environment.set('refreshToken', body.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.environment.set('accessToken', body.accessToken);",
+                  "pm.environment.set('refreshToken', body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{demoEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/forgot-password",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "forgot-password"
+              ]
+            },
+            "description": "Always returns a generic success message regardless of whether the email exists (avoids user enumeration) — check the DB/email for the actual reset code."
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Tenant-ID",
+                "value": "{{tenantId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{demoEmail}}\",\n  \"code\": \"REPLACE_WITH_RESET_CODE\",\n  \"newPassword\": \"NewPassw0rd!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/auth/reset-password",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "reset-password"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "REST — Agents & Bookings",
+      "item": [
+        {
+          "name": "Get Agent Credit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agents/{{agentId}}/credit",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agents",
+                "{{agentId}}",
+                "credit"
+              ]
+            },
+            "description": "Requires a valid access token — tenant is resolved from the JWT's claims, not a header, on authenticated routes. {{agentId}} defaults to blank; run \"SQL: get seeded agent id\" note in this folder's description or paste it from `docker compose exec postgres psql -U ota -d ota -t -c 'SELECT \"Id\" FROM \"Agents\" WHERE \"Tier\"=3;'`."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Agent Ledger",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agents/{{agentId}}/ledger?take=10",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agents",
+                "{{agentId}}",
+                "ledger"
+              ],
+              "query": [
+                {
+                  "key": "take",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Booking by PNR",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/bookings/{{pnr}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bookings",
+                "{{pnr}}"
+              ]
+            },
+            "description": "{{pnr}} is captured automatically by the gRPC \"Create Booking\" request's test script, once you've run that."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unauthenticated request (expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agents/{{agentId}}/credit",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agents",
+                "{{agentId}}",
+                "credit"
+              ]
+            },
+            "description": "Negative-case check: no Authorization header should always be rejected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('401 Unauthorized without a token', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "REST — Agencies (Admin)",
+      "description": "Admin-only agency management (C1). Needs {{adminAccessToken}} from Auth → Login as PlatformAdmin. Tier binds as a raw integer (1=Standard, 2=Silver, 3=Gold, 4=Platinum), not a string — no JsonStringEnumConverter is registered.",
+      "item": [
+        {
+          "name": "Create Agency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"New Agency\",\n  \"email\": \"new-agency@example.com\",\n  \"tier\": 3,\n  \"creditLimit\": 0\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 response', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Agencies",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies?search=&isActive=true&page=1&pageSize=20",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": ""
+                },
+                {
+                  "key": "isActive",
+                  "value": "true"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Agency",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies/{{agencyId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies",
+                "{{agencyId}}"
+              ]
+            },
+            "description": "{{agencyId}} defaults to blank — paste one from \"Create Agency\" or \"List Agencies\"."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Agency",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies/{{agencyId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies",
+                "{{agencyId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Renamed Agency\",\n  \"email\": \"new-agency@example.com\",\n  \"tier\": 2\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Activate Agency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies/{{agencyId}}/activate",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies",
+                "{{agencyId}}",
+                "activate"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deactivate Agency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agencies/{{agencyId}}/deactivate",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agencies",
+                "{{agencyId}}",
+                "deactivate"
+              ]
+            },
+            "description": "Blocks the agency's users from logging in and blocks new bookings for this agency — see AuthController.Login and OtaCoreGrpcService.ProcessB2BBooking."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "REST — Agent Tiers (Admin)",
+      "description": "Admin-editable metadata (name/description/default/active) layered over the 4 fixed AgentTier enum slots (1=Standard, 2=Silver, 3=Gold, 4=Platinum) — the enum itself is NOT dynamic (it's part of the gRPC wire contract), this is a per-tenant config layer on top of it. Needs {{adminAccessToken}} — see the Agencies folder's note on obtaining one. Tier binds as a raw integer, not a string.",
+      "item": [
+        {
+          "name": "Create Agent Tier Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agent-tiers",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agent-tiers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tier\": 3,\n  \"name\": \"Gold\",\n  \"description\": \"Top-tier agencies\",\n  \"isDefault\": false\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 response', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Agent Tier Profiles",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agent-tiers",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agent-tiers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Agent Tier Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agent-tiers/{{agentTierProfileId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agent-tiers",
+                "{{agentTierProfileId}}"
+              ]
+            },
+            "description": "{{agentTierProfileId}} defaults to blank — paste one from \"Create\" or \"List\"."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Agent Tier Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/agent-tiers/{{agentTierProfileId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "agent-tiers",
+                "{{agentTierProfileId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Gold\",\n  \"description\": \"Top-tier agencies\",\n  \"isDefault\": true,\n  \"isActive\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "REST — Markup Rules (Admin)",
+      "description": "Admin CRUD over MarkupRule, the pricing configuration ResolveMarkupRuleAsync reads live on every search/booking. ProductType MUST be one of: Unspecified, Flight, Hotel, Package, Activity, or \"*\" (wildcard) — these are the generated C# enum member names, NOT the proto's PRODUCT_TYPE_* wire names; sending the wire name is rejected. Needs {{adminAccessToken}}.",
+      "item": [
+        {
+          "name": "Create Markup Rule",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tier\": 3,\n  \"productType\": \"Flight\",\n  \"markupPercent\": 0.05,\n  \"subAgentDefaultMargin\": 5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 response', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Markup Rules",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules?tier=&productType=&isActive=true&page=1&pageSize=20",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules"
+              ],
+              "query": [
+                {
+                  "key": "tier",
+                  "value": ""
+                },
+                {
+                  "key": "productType",
+                  "value": ""
+                },
+                {
+                  "key": "isActive",
+                  "value": "true"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Markup Rule",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules/{{markupRuleId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules",
+                "{{markupRuleId}}"
+              ]
+            },
+            "description": "{{markupRuleId}} defaults to blank — paste one from \"Create\" or \"List\"."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Markup Rule",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules/{{markupRuleId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules",
+                "{{markupRuleId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tier\": 3,\n  \"productType\": \"Flight\",\n  \"markupPercent\": 0.07,\n  \"subAgentDefaultMargin\": 5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Activate Markup Rule",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules/{{markupRuleId}}/activate",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules",
+                "{{markupRuleId}}",
+                "activate"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deactivate Markup Rule",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/markup-rules/{{markupRuleId}}/deactivate",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "markup-rules",
+                "{{markupRuleId}}",
+                "deactivate"
+              ]
+            },
+            "description": "Takes effect immediately on the next search/booking for this tier+product — ResolveMarkupRuleAsync filters on IsActive live."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "REST — Exchange Rates (Admin)",
+      "description": "PlatformAdmin CRUD over global FX rates (pricing.ExchangeRates) that CurrencyConversion reads on every search/booking. Not tenant-scoped. Creating an open-ended rate closes any previous open row for the same From/To pair. DELETE soft-closes (sets EffectiveTo). Needs {{adminAccessToken}}. Sell currency remains Tenants.SellCurrency (provision script).",
+      "item": [
+        {
+          "name": "Create Exchange Rate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/exchange-rates",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "exchange-rates"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromCurrency\": \"USD\",\n  \"toCurrency\": \"BDT\",\n  \"rate\": 110,\n  \"source\": \"manual\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 response', () => pm.response.to.have.status(201));",
+                  "const id = pm.response.json().id;",
+                  "if (id) pm.environment.set('exchangeRateId', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Exchange Rates",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/exchange-rates?from=USD&to=BDT",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "exchange-rates"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "USD"
+                },
+                {
+                  "key": "to",
+                  "value": "BDT"
+                },
+                {
+                  "key": "asOf",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Exchange Rate",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/exchange-rates/{{exchangeRateId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "exchange-rates",
+                "{{exchangeRateId}}"
+              ]
+            },
+            "description": "{{exchangeRateId}} is set by Create, or paste an id from List."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Exchange Rate",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/exchange-rates/{{exchangeRateId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "exchange-rates",
+                "{{exchangeRateId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rate\": 112.5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Soft-close Exchange Rate",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/exchange-rates/{{exchangeRateId}}",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "exchange-rates",
+                "{{exchangeRateId}}"
+              ]
+            },
+            "description": "Sets EffectiveTo = now (audit trail kept). Takes effect on the next search/booking."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('204 response', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "REST — B2C Payments (SSLCommerz)",
+      "item": [
+        {
+          "name": "Start Pay (customer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerAccessToken}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"pay-{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/customers/me/bookings/{{bookingId}}/pay",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers",
+                "me",
+                "bookings",
+                "{{bookingId}}",
+                "pay"
+              ]
+            },
+            "description": "Requires a customer access token and a Pending B2C booking id. Returns gatewayUrl to open in the browser. Needs SSLCOMMERZ_STORE_PASSWORD and STOREFRONT_PUBLIC_URL on core. Saves paymentId/tranId/gatewayUrl."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 response', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.paymentId) pm.environment.set('paymentId', body.paymentId);",
+                  "if (body.tranId) pm.environment.set('tranId', body.tranId);",
+                  "if (body.gatewayUrl) pm.environment.set('gatewayUrl', body.gatewayUrl);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SSLCommerz IPN (probe)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "val_id",
+                  "value": "{{sslValId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "tran_id",
+                  "value": "{{tranId}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrlRest}}/api/v1/payments/sslcommerz/ipn",
+              "host": [
+                "{{baseUrlRest}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payments",
+                "sslcommerz",
+                "ipn"
+              ]
+            },
+            "description": "Anonymous — no X-Tenant-ID. Real IPNs come from SSLCommerz with a real val_id; this probe only works after a sandbox payment. Localhost needs a public tunnel for live IPN."
+          }
+        }
+      ]
+    },
+    {
+      "name": "gRPC — Search & Booking (real Sabre)",
+      "item": [
+        {
+          "name": "Search Availability",
+          "request": {
+            "method": "GetSupplierAvailability",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": {\n    \"tenant_id\": \"{{tenantId}}\",\n    \"channel\": \"CHANNEL_TYPE_B2B_AGENT\",\n    \"agent_id\": \"{{agentId}}\",\n    \"agent_tier\": \"AGENT_TIER_GOLD\",\n    \"currency\": \"USD\"\n  },\n  \"product_type\": \"PRODUCT_TYPE_FLIGHT\",\n  \"origin\": \"DAC\",\n  \"destination\": \"DXB\",\n  \"check_in\": \"2026-10-01\",\n  \"adults\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlGrpc}}",
+              "host": [
+                "{{baseUrlGrpc}}"
+              ]
+            },
+            "description": "gRPC unary call to ota.v1.OtaCoreService/GetSupplierAvailability. If Postman doesn't auto-link the proto on import: click \"Select gRPC service\" → Import a .proto file → shared/protos/ota.proto. Falls back to SupplierStub's deterministic fake data if SABRE_JV_CLIENT_ID/SECRET aren't set; hits real Sabre cert otherwise. Bump check_in to a date well in the future if you get no offers back (availability varies)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('has at least one offer', () => pm.expect(body.offers && body.offers.length).to.be.above(0));",
+                  "if (body.offers && body.offers.length) {",
+                  "  pm.environment.set('offerId', body.offers[0].offerId);",
+                  "  pm.environment.set('offerNetRate', body.offers[0].netRate);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revalidate Offer",
+          "request": {
+            "method": "RevalidateOffer",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": {\n    \"tenant_id\": \"{{tenantId}}\",\n    \"channel\": \"CHANNEL_TYPE_B2B_AGENT\",\n    \"agent_id\": \"{{agentId}}\",\n    \"agent_tier\": \"AGENT_TIER_GOLD\",\n    \"currency\": \"USD\"\n  },\n  \"offer_id\": \"{{offerId}}\",\n  \"expected_net_rate\": {{offerNetRate}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlGrpc}}",
+              "host": [
+                "{{baseUrlGrpc}}"
+              ]
+            },
+            "description": "Run Search Availability first so {{offerId}}/{{offerNetRate}} are populated. Against real Sabre this also refreshes the cached offer with revalidate's own (more authoritative) segment data — required before Create Booking will succeed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('matches true', () => pm.expect(pm.response.json().matches).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Booking (ProcessB2BBooking)",
+          "request": {
+            "method": "ProcessB2BBooking",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": {\n    \"tenant_id\": \"{{tenantId}}\",\n    \"channel\": \"CHANNEL_TYPE_B2B_AGENT\",\n    \"agent_id\": \"{{agentId}}\",\n    \"agent_tier\": \"AGENT_TIER_GOLD\",\n    \"currency\": \"USD\"\n  },\n  \"offer_id\": \"{{offerId}}\",\n  \"idempotency_key\": \"postman-{{$guid}}\",\n  \"contact_email\": \"ops@skybridge.example\",\n  \"contact_phone\": \"8801710000000\",\n  \"travelers\": [\n    {\n      \"first_name\": \"Aisha\",\n      \"last_name\": \"Rahman\",\n      \"date_of_birth\": \"1995-05-20\",\n      \"document_type\": \"PASSPORT\",\n      \"document_number\": \"P1234567\",\n      \"nationality\": \"BD\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlGrpc}}",
+              "host": [
+                "{{baseUrlGrpc}}"
+              ]
+            },
+            "description": "Reserves the PNR with the supplier — status comes back Pending, no credit debited yet (two-phase booking: pay/ticket happens in Issue Ticket). Against real Sabre, availability can genuinely change between search and book (a real GDS characteristic, not a bug) — if this returns FailedPrecondition, re-run Search + Revalidate and try again."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('status Pending', () => pm.expect(body.status).to.eql('BOOKING_STATUS_PENDING'));",
+                  "if (body.bookingId) pm.environment.set('bookingId', body.bookingId);",
+                  "if (body.pnr) pm.environment.set('pnr', body.pnr);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue Ticket",
+          "request": {
+            "method": "IssueTicket",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": {\n    \"tenant_id\": \"{{tenantId}}\",\n    \"channel\": \"CHANNEL_TYPE_B2B_AGENT\",\n    \"agent_id\": \"{{agentId}}\",\n    \"agent_tier\": \"AGENT_TIER_GOLD\",\n    \"currency\": \"USD\"\n  },\n  \"booking_id\": \"{{bookingId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrlGrpc}}",
+              "host": [
+                "{{baseUrlGrpc}}"
+              ]
+            },
+            "description": "Pays via AgentCreditService (real ledger debit, verify with Get Agent Ledger afterwards) and tickets with the supplier. On any ticketing failure the credit is automatically released — check the ledger for the matching debit+refund pair."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.test('status Confirmed', () => pm.expect(body.status).to.eql('BOOKING_STATUS_CONFIRMED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

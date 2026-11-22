@@ -1,0 +1,13 @@
+ID,Version,Channel,Pillar,Task,Layer,Priority,Estimate (days),Depends On,Acceptance Criteria,Status,Notes
+S-C4-2,vNext,B2C,4 Retention,Full loyalty points earn/redeem ledger (points-lite deferred from launch),Backend+Frontend,P0,5,C4-3;P4-5,Earn on Confirmed; redeem reduces payable; abuse-limited,Not started,Slipped: launch ships WhatsApp rebook loop without full points
+S-C2-3,vNext,B2C,2 Servicing,Self-service schedule-change request + status (ops-assisted),Backend+Frontend,P1,3,P5-5;C2-9,Customer submits change request; status on manage-booking,Not started,Slipped first if capacity tight; launch = CS/WhatsApp handoff
+S-C2-4,vNext,B2C,2 Servicing,Self-service name-correction request + status (minor/major rules),Backend+Frontend,P1,2,P5-5;C2-9,Request stored; blocked reason if fare forbids,Not started,Slipped with S-C2-3
+S-C2-1b,vNext,Shared,2 Servicing,Full NDC/supplier automated schedule change (not just cancel/refund),Backend,P2,8,C2-1;S-C2-3,Eligible changes complete without human when supplier allows,Not started,Launch keeps cancel auto-path only
+S-C4-2b,vNext,B2C,4 Retention,Tiered member fares / stamp-card lite if full points still heavy,Backend+Frontend,P1,3,C4-1,Repeat bookers see member price or punch-card reward,Not started,Fallback if S-C4-2 slips again
+S-AI-1,vNext Q+1,Shared,2 Servicing,Structured airline cancel/change/baggage rule pack for retrieval,Backend+Content,P0,4,C2-1,Rules queryable by airline/fare; used by AI and FAQ,Not started,AI prerequisite — next quarter
+S-AI-2,vNext Q+1,B2C,2 Servicing,LLM support agent (RAG on rules + booking context; escalate to human),Backend+Frontend,P0,8,S-AI-1;C4-3,Basic inquiries resolved; complex cases routed with transcript,Not started,In-scope next quarter per decision
+S-AI-3,vNext Q+1,B2B,2 Servicing,Agent-facing FAQ assist in dashboard (same RAG),Frontend,P1,3,S-AI-1,Agent gets rule answers in portal without CS,Not started,
+S-INTL-1,vNext,Shared,3 Payments,International gateway routing (Stripe/Adyen) by BIN/currency,Backend,P2,8,C3-1,Non-BD cards routed to lowest-fee international PSP,Not started,Out of BD launch scope
+S-HOTEL-1,vNext,Shared,4 Acquisition,Hotels/experiences catalog spike (niche verticals),Product+Backend,P2,10,,Go/no-go on non-flight vertical with margin model,Not started,Flights-only until contribution proven
+S-B2B-CARD-1,vNext,B2B,3 Payments,Optional pay-per-booking card for agencies (beside credit wallet),Backend,P2,6,B3-3,Selected agencies can pay booking by card without credit top-up,Not started,Credit wallet remains default
+S-ANC-1,vNext,Shared,1 Cost,Supplier ancillaries (bags/seats/meals) lazy-loaded at checkout,Backend+Frontend,P1,8,C1-6;P5-10,Ancillaries fetched only after Select; never on search,Not started,Launch keeps extras hidden

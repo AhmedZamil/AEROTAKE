@@ -1,0 +1,38 @@
+name: Playwright
+
+# These tests create accounts and bookings against a live storefront.
+# Point B2C_BASE_URL at a staging host, not production.
+# The nightly run is skipped until the repository variable B2C_BASE_URL is set,
+# so an empty schedule does not spend Actions minutes.
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Storefront URL to test (a staging host, not production)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.B2C_BASE_URL != '' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ota-polyglot-platform/apps/frontend-b2c
+    env:
+      B2C_BASE_URL: ${{ github.event.inputs.base_url || vars.B2C_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ota-polyglot-platform/apps/frontend-b2c/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e

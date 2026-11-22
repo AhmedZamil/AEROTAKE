@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - "ota-polyglot-platform/apps/frontend-b2c/**"
+      - "ota-polyglot-platform/apps/core-engine-dotnet/**"
+      - "ota-polyglot-platform/shared/protos/**"
+      - ".github/workflows/ci.yml"
+      - ".github/scripts/changed-paths.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      b2c: ${{ steps.filter.outputs.b2c }}
+      core: ${{ steps.filter.outputs.core }}
+      proto: ${{ steps.filter.outputs.proto }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: .github/scripts/changed-paths.sh >> "$GITHUB_OUTPUT"
+
+  frontend-b2c:
+    needs: changes
+    if: needs.changes.outputs.b2c == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ota-polyglot-platform/apps/frontend-b2c
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ota-polyglot-platform/apps/frontend-b2c/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  core-engine:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ota
+          POSTGRES_USER: ota
+          POSTGRES_PASSWORD: change-me-in-prod
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ota -d ota"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Test
+        working-directory: ota-polyglot-platform
+        env:
+          OTA_TEST_POSTGRES_CONNECTION: Host=localhost;Port=5432;Database=ota;Username=ota;Password=change-me-in-prod
+          ConnectionStrings__Postgres: Host=localhost;Port=5432;Database=ota;Username=ota;Password=change-me-in-prod
+          OTA_TEST_REDIS_CONNECTION: localhost:6379,abortConnect=false
+        run: dotnet test apps/core-engine-dotnet/tests/Ota.CoreEngine.Tests/Ota.CoreEngine.Tests.csproj
+
+  proto:
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile ota.proto
+        working-directory: ota-polyglot-platform
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --proto_path=shared/protos --descriptor_set_out=/dev/null shared/protos/ota.proto

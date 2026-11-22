@@ -1,0 +1,216 @@
+syntax = "proto3";
+
+package ota.v1;
+
+option csharp_namespace = "Ota.CoreEngine.Grpc";
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// OTA Core Service — supplier availability + B2B booking pipeline.
+// Consumed by: frontend-nextjs (via BFF), ai-engine-python, partner gateways.
+// ---------------------------------------------------------------------------
+service OtaCoreService {
+  // Cached supplier availability search (Redis-backed, tenant-aware pricing).
+  rpc GetSupplierAvailability (SearchRequest) returns (SearchResponse);
+
+  // Re-prices a previously-returned offer_id — must be called before booking;
+  // a client-sent price is never trusted (mirrors AeroTake's fare-mismatch check).
+  rpc RevalidateOffer (RevalidateRequest) returns (RevalidateResponse);
+
+  // Reserves the PNR with the supplier and persists the booking as Pending —
+  // no payment yet. Call IssueTicket to pay and ticket it.
+  rpc ProcessB2BBooking (B2BBookingRequest) returns (BookingConfirmation);
+
+  // Pays for (via AgentCreditService) and tickets a Pending booking with the
+  // supplier -> Kafka `booking-created` / `agent-credit-deducted` emission.
+  rpc IssueTicket (IssueTicketRequest) returns (BookingConfirmation);
+}
+
+// ---------------------------- Tenancy / Actors -----------------------------
+
+enum ChannelType {
+  CHANNEL_TYPE_UNSPECIFIED = 0;
+  CHANNEL_TYPE_B2C = 1;          // Direct consumer portal
+  CHANNEL_TYPE_B2B_AGENT = 2;    // Registered agency
+  CHANNEL_TYPE_B2B_SUB_AGENT = 3;// Sub-agent under an agency
+  CHANNEL_TYPE_WHITE_LABEL = 4;  // Tenant white-label storefront
+}
+
+enum AgentTier {
+  AGENT_TIER_UNSPECIFIED = 0;
+  AGENT_TIER_STANDARD = 1;
+  AGENT_TIER_SILVER = 2;
+  AGENT_TIER_GOLD = 3;
+  AGENT_TIER_PLATINUM = 4;
+}
+
+message TenantContext {
+  string tenant_id = 1;          // Resolved by Next.js middleware / gateway
+  ChannelType channel = 2;
+  string agent_id = 3;           // Empty for pure B2C
+  string sub_agent_id = 4;       // Empty unless sub-agent flow
+  AgentTier agent_tier = 5;
+  string currency = 6;           // ISO 4217 — IGNORED by core (P4-10): sell currency comes from Tenant.SellCurrency
+  string locale = 7;             // BCP 47, e.g. "en-US"
+}
+
+// ---------------------------- Availability ---------------------------------
+
+enum ProductType {
+  PRODUCT_TYPE_UNSPECIFIED = 0;
+  PRODUCT_TYPE_FLIGHT = 1;
+  PRODUCT_TYPE_HOTEL = 2;
+  PRODUCT_TYPE_PACKAGE = 3;
+  PRODUCT_TYPE_ACTIVITY = 4;
+}
+
+message SearchRequest {
+  TenantContext tenant = 1;
+  ProductType product_type = 2;
+  string origin = 3;             // IATA / city code (flights)
+  string destination = 4;        // IATA / city code
+  string check_in = 5;           // ISO 8601 date
+  string check_out = 6;          // ISO 8601 date
+  int32 adults = 7;
+  int32 children = 8;
+  int32 rooms = 9;
+  map<string, string> filters = 10; // e.g. cabin=ECONOMY, stars=4
+  int32 infants = 11;               // lap infants under 2 (not a seat); must be ≤ adults
+}
+
+// One flown segment of an itinerary. leg_index distinguishes outbound (0)
+// from return (1) segments when an offer covers a round-trip search —
+// always 0 for a one-way or multi-city (independently-searched) offer.
+message FlightSegment {
+  string airline_code = 1;
+  string flight_number = 2;
+  string origin = 3;
+  string destination = 4;
+  // Absolute instants (UTC) — use these for duration/layover math, since
+  // origin and destination can be in different UTC offsets.
+  google.protobuf.Timestamp departure_time = 5;
+  google.protobuf.Timestamp arrival_time = 6;
+  string booking_class = 7;
+  int32 leg_index = 8;
+  // Local wall-clock time at the origin/destination airport respectively
+  // (ISO 8601, no offset — e.g. "2026-10-15T04:30:00"), for display. A
+  // Timestamp alone can't be reformatted back into "what the departure
+  // board actually showed" without also knowing that airport's UTC offset.
+  string departure_time_local = 9;
+  string arrival_time_local = 10;
+}
+
+message SupplierOffer {
+  string offer_id = 1;
+  string supplier_code = 2;      // e.g. "AMADEUS", "HOTELBEDS"
+  ProductType product_type = 3;
+  string title = 4;
+  double net_rate = 5;           // Supplier net (never exposed to sub-agents)
+  double sell_price = 6;         // Net x (1 + markup) + sub-agent margin
+  string currency = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  map<string, string> attributes = 9;
+  repeated FlightSegment segments = 10; // Empty for non-flight product types.
+  // Checked baggage allowance for the itinerary, when the supplier's
+  // response reports one. checked_baggage_included false is ambiguous
+  // between "explicitly not included" and "supplier didn't say" — callers
+  // that need to tell those apart should treat weight_kg == 0 alongside
+  // included == false as the latter.
+  bool checked_baggage_included = 11;
+  double checked_baggage_weight_kg = 12;
+}
+
+message SearchResponse {
+  string search_id = 1;
+  repeated SupplierOffer offers = 2;
+  bool cache_hit = 3;
+  int64 latency_ms = 4;
+  // Human-readable notes when a supplier didn't contribute (down, timed
+  // out, ...) so the UI can say "some fares may be missing" instead of
+  // silently showing a shorter list. Empty on a fully successful search.
+  repeated string warnings = 5;
+}
+
+// ---------------------------- B2B Booking ----------------------------------
+
+message Traveler {
+  string first_name = 1;
+  string last_name = 2;
+  string date_of_birth = 3;      // ISO 8601 date
+  string document_number = 4;
+  string document_type = 5;      // PASSPORT | NID
+  string nationality = 6;        // ISO 3166-1 alpha-2, e.g. "BD"
+  // Needed by some suppliers (Hajee Air's hold-booking) and previously
+  // faked for others; optional — empty means "not collected".
+  string title = 7;              // mr | mrs | ms
+  string gender = 8;             // male | female
+  string passport_expiry_date = 9; // ISO 8601 date
+  bool wheelchair = 10;
+}
+
+message B2BBookingRequest {
+  TenantContext tenant = 1;
+  string offer_id = 2;
+  string search_id = 3;
+  repeated Traveler travelers = 4;
+  string contact_email = 5;
+  string contact_phone = 6;
+  string idempotency_key = 7;    // Client-supplied, enforced server-side
+  string payment_mode = 8;       // CREDIT_LEDGER | CARD | WALLET
+}
+
+message RevalidateRequest {
+  TenantContext tenant = 1;
+  string offer_id = 2;
+  double expected_net_rate = 3;  // From the original search response
+  // Consumer (B2C) callers never see a net rate, so they cannot send one: they send the sell price they were shown, and the offer
+  // "matches" only if it is still bookable at exactly that price. Ignored for other channels; 0 = not given.
+  double expected_sell_price = 4;
+}
+
+message RevalidateResponse {
+  bool matches = 1;
+  double current_net_rate = 2;
+  string failure_reason = 3;     // Set when matches = false or offer expired
+  // Recomputed, tax+markup-inclusive sell price at the current net rate —
+  // same pricing.Calculate() used by search/booking. 0 when failure_reason
+  // is set (offer expired/unknown, or the supplier call itself failed).
+  double current_sell_price = 4;
+  // Set when the requested offer could no longer be repriced but the SAME
+  // itinerary is still available from another supplier: the caller should
+  // switch to this offer (current_net_rate/current_sell_price describe it).
+  string replacement_offer_id = 5;
+}
+
+message IssueTicketRequest {
+  TenantContext tenant = 1;
+  string booking_id = 2;         // BookingConfirmation.booking_id from ProcessB2BBooking
+}
+
+enum BookingStatus {
+  BOOKING_STATUS_UNSPECIFIED = 0;
+  BOOKING_STATUS_CONFIRMED = 1;
+  BOOKING_STATUS_PENDING = 2;
+  BOOKING_STATUS_REJECTED_CREDIT = 3;  // Agent credit limit exceeded
+  BOOKING_STATUS_REJECTED_EXPIRED = 4; // Offer TTL elapsed
+  BOOKING_STATUS_FAILED = 5;
+}
+
+message PriceBreakdown {
+  double supplier_net_rate = 1;
+  double agent_markup_pct = 2;   // e.g. 0.08 for 8%
+  double sub_agent_margin = 3;   // Flat amount added on top
+  double final_price = 4;        // net * (1 + markup) + sub_agent_margin
+  string currency = 5;
+}
+
+message BookingConfirmation {
+  string booking_id = 1;
+  string pnr = 2;
+  BookingStatus status = 3;
+  PriceBreakdown price = 4;
+  double agent_balance_after = 5;
+  google.protobuf.Timestamp created_at = 6;
+  string failure_reason = 7;
+}

@@ -1,0 +1,53 @@
+# Dev-mode overrides — auto-loaded by `docker compose up` alongside
+# docker-compose.yml. core-engine, frontend (B2B), and frontend-b2c hot-reload
+# here; extend the same pattern for ai-engine when that work starts.
+#
+# To go back to the production-style build: delete this file, or run
+# `docker compose -f docker-compose.yml up -d --build` to bypass it once.
+#
+# Copy this file to docker-compose.override.yml (gitignored) for local hot-reload.
+# Core-engine obj/bin isolation is handled by Directory.Build.props (T-3), not
+# by volume overlays — keep the NuGet package volume so restores stay fast.
+services:
+  core-engine:
+    build:
+      context: .
+      dockerfile: apps/core-engine-dotnet/Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - core-engine-nuget:/root/.nuget/packages
+    environment:
+      # Native FS-change events are unreliable across Docker Desktop bind
+      # mounts; polling is slower but actually fires.
+      DOTNET_USE_POLLING_FILE_WATCHER: "1"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend-nextjs/Dockerfile.dev
+    volumes:
+      # Repo root, not just apps/frontend-nextjs — the gRPC bridge
+      # (lib/grpc-client.ts) reads shared/protos/ota.proto from disk at
+      # request time, same reason core-engine's dev mount above is the
+      # whole repo rather than just its own app directory.
+      - .:/workspace
+      - frontend-node-modules:/workspace/apps/frontend-nextjs/node_modules
+    environment:
+      WATCHPACK_POLLING: "true"
+      OTA_PROTO_PATH: "/workspace/shared/protos/ota.proto"
+
+  frontend-b2c:
+    build:
+      context: .
+      dockerfile: apps/frontend-b2c/Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - frontend-b2c-node-modules:/workspace/apps/frontend-b2c/node_modules
+    environment:
+      WATCHPACK_POLLING: "true"
+      OTA_PROTO_PATH: "/workspace/shared/protos/ota.proto"
+
+volumes:
+  core-engine-nuget:
+  frontend-node-modules:
+  frontend-b2c-node-modules:
